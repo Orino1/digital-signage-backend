@@ -161,7 +161,7 @@ async def delete_device(device_id: int, session: SessionDep, admin: AdminKeyDep)
     }
 )
 async def update_device_info(
-    device_id: int, data: DeviceUpdate, session: SessionDep, admin: AdminKeyDep
+    device_id: int, data: DeviceUpdate, session: SessionDep, admin: AdminKeyDep, redis: RedisDep
 ) -> DevicePublicOutput:
     device = session.exec(select(Device).filter_by(id=device_id)).first()
     if not device:
@@ -181,10 +181,20 @@ async def update_device_info(
                 status_code=status.HTTP_409_CONFLICT,
             )
 
+    if "setup_id" in update_data and not update_data["setup_id"] == None:
+        setup = session.exec(select(Setup).filter_by(id=update_data["setup_id"])).first()
+        if not setup:
+            raise HTTPException(
+                detail=f"Setup {update_data['setup_id']} not found", status_code=status.HTTP_404_NOT_FOUND
+            )
 
     device.sqlmodel_update(update_data)
     session.add(device)
     session.commit()
+
+    if "setup_id" in update_data:
+        instruction = json.dumps({"instruction": "update_setup"})
+        await redis.publish(f"device:{device.id}:instructions", instruction)
 
     return device
 

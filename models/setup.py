@@ -101,12 +101,30 @@ class PlaylistOutput(PlaylistBase):
     videos: list["VideoBase"] = []
 
 class PlaylistUpdate(SQLModel):
-    id: int 
-    name: str | None = Field(default=None, min_length=1, max_length=256)
+    id: int
+    name: str
+    start_time: str = Field(min_length=5, max_length=5)
+    end_time: str = Field(min_length=5, max_length=5)
+    monday: bool
+    tuesday: bool
+    wednesday: bool
+    thursday: bool
+    friday: bool
+    saturday: bool
+    sunday: bool
     images_to_add: list["ImageBase"] = []
     images_to_delete: list[int] = []
     videos_to_add: list[str] = []
     videos_to_delete: list[int] = []
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time(cls, value):
+        try:
+            time.fromisoformat(value)
+            return value
+        except ValueError:
+            raise ValueError("Time must be in 'HH:MM' format")
 # images
 class ImageBase(SQLModel):
     url: str = Field(min_length=1)

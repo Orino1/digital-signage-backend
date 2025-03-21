@@ -123,6 +123,19 @@ async def create_setup(data: SetupInput, session: SessionDep, redis: RedisDep, a
 
         # add playlists
         for playlist_data in data.playlists:
+            # at least one weekday is set to true
+            if not any([
+                playlist_data.monday,
+                playlist_data.tuesday,
+                playlist_data.wednesday,
+                playlist_data.thursday,
+                playlist_data.friday,
+                playlist_data.saturday,
+                playlist_data.sunday,
+            ]):
+                raise HTTPException(detail=f"Playlist {playlist_data.name} must have at least one weekday set to true", status_code=status.HTTP_400_BAD_REQUEST)
+            
+            # videos and images must not be both []
             if len(playlist_data.images) == 0 and len(playlist_data.videos) == 0:
                 raise HTTPException(detail=f"Playlist {playlist_data.name} must have at least one image or video", status_code=status.HTTP_400_BAD_REQUEST)
 
@@ -224,7 +237,8 @@ async def delete_setup(setup_id: int, session: SessionDep, redis: RedisDep, admi
 
     return {"detail": f"Setup {setup_id} deleted successfully."}
 
-
+# TODO: make sure to check for a unique name on the setup
+# TODO: update the description to match the new req
 @router.put("/{setup_id}", response_model=SetupOutput, summary="Update an existing setup configuration.",
     description="Updates an existing setup configuration identified by `setup_id` with provided details. Supports updating playlists, devices, and setup name. After update, it sends an `update_setup` instruction to all associated devices via Redis pub/sub. Devices listening on `/device/me/instructions` will receive this instruction and subsequently fetch updated setup information from `/device/me`.",
     tags=["Setups"],
@@ -246,6 +260,7 @@ async def update_setup(
                 status_code=status.HTTP_404_NOT_FOUND,
             )
 
+        # todo: unique name must be here
         if data.name:
             setup.name = data.name
 
@@ -257,48 +272,10 @@ async def update_setup(
             if playlist:
                 session.delete(playlist)
 
-        # TODO: re-do - this check must be applied at the end on setup.playlist if so raise
-        days = [
-            "monday",
-            "tuesday",
-            "wednesday",
-            "thursday",
-            "friday",
-            "saturday",
-            "sunday",
-        ]
-        for day in days:
-            # TODO: Ai generated make your own
-            # Filter playlists that run on this specific day
-            day_playlists = [p for p in data.playlists if getattr(p, day)]
-
-            # Sort by start_time
-            day_playlists.sort(key=lambda p: datetime.strptime(p.start_time, "%H:%M"))
-
-            # Compare each playlist with the next one
-            for i in range(len(day_playlists) - 1):
-                current_end = datetime.strptime(day_playlists[i].end_time, "%H:%M")
-                next_start = datetime.strptime(day_playlists[i + 1].start_time, "%H:%M")
-                if current_end > next_start:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Playlists '{day_playlists[i].name}' and '{day_playlists[i + 1].name}' overlap on {day}",
-                    )
-
         # new playlist
         for playlist_data in data.playlists_to_add:
             if len(playlist_data.images) == 0 and len(playlist_data.videos) == 0:
                 raise HTTPException(detail=f"Playlist {playlist_data.name} must have at least one image or video", status_code=status.HTTP_400_BAD_REQUEST)
-
-
-            start_time = datetime.strptime(playlist_data.start_time, "%H:%M")
-            end_time = datetime.strptime(playlist_data.end_time, "%H:%M")
-
-            if start_time >= end_time:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Playlist {playlist_data.name} start_time must be before end_time",
-                )
 
             new_playlist = Playlist(
                 name=playlist_data.name,
@@ -334,7 +311,8 @@ async def update_setup(
                 select(Playlist).filter_by(id=playlist_update.id, setup_id=setup.id)
             ).first()
             if playlist:
-
+                # updating playlist meta data ( start_time/end_time/weekdays )
+                playlist.sqlmodel_update(playlist_update.model_dump(exclude={"images_to_add", "images_to_delete", "videos_to_add", "videos_to_delete", "id"}))
                 # remove images
                 for image_id in playlist_update.images_to_delete:
                     image = session.exec(
@@ -351,7 +329,6 @@ async def update_setup(
                             playlist_id=playlist.id,
                         )
                     )
-
                 # remove videos
                 for video_id in playlist_update.videos_to_delete:
                     video = session.exec(
@@ -359,18 +336,15 @@ async def update_setup(
                     ).first()
                     if video:
                         session.delete(video)
-
                 # add videos
                 for video_url in playlist_update.videos_to_add:
                     session.add(Video(url=video_url, playlist_id=playlist.id))
-
         # add devices
         for device_id in data.devices_to_add:
             device = session.exec(select(Device).filter_by(id=device_id)).first()
             if device:
                 device.setup_id = setup.id
                 session.add(device)
-
         # remove devices
         for device_id in data.devices_to_remove:
             device = session.exec(
@@ -379,13 +353,77 @@ async def update_setup(
             if device:
                 device.setup_id = None
                 session.add(device)
-        # TODO: check for unqiue names across setup.playlists.name before notifying users for an update + raise
+
+        # unqiue name for playlists
+        playlist_names = [playlist.name for playlist in setup.data]
+        if len(playlist_names) != len(set(playlist_names)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Playlist name must be unqiue within a setip",
+            )
+        
+        # for each playlist we must have at least a single week day set to true otherwise we raise an exepction
+
+        for playlist_data in setup.data:
+            # check if at lesat one weekday is set to true
+            if not any([
+                playlist_data.monday,
+                playlist_data.tuesday,
+                playlist_data.wednesday,
+                playlist_data.thursday,
+                playlist_data.friday,
+                playlist_data.saturday,
+                playlist_data.sunday,
+            ]):
+                raise HTTPException(detail=f"Playlist {playlist_data.name} must have at least one weekday set to true", status_code=status.HTTP_400_BAD_REQUEST)
+            # Check if at least videos and images have an image
+            if len(playlist_data.images) == 0 and len(playlist_data.videos) == 0:
+                raise HTTPException(detail=f"Playlist {playlist_data.name} must have at least one image or video", status_code=status.HTTP_400_BAD_REQUEST)
+
+            # Compare start and end time
+            start_time = datetime.strptime(playlist_data.start_time, "%H:%M")
+            end_time = datetime.strptime(playlist_data.end_time, "%H:%M")
+
+            if start_time >= end_time:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Playlist {playlist_data.name} start_time must be before end_time",
+                )
+
+        days = [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        ]
+        for day in days:
+            # TODO: Ai generated make your own
+            # Filter playlists that run on this specific day
+            day_playlists = [p for p in setup.data if getattr(p, day)]
+            # Sort by start_time
+            day_playlists.sort(key=lambda p: datetime.strptime(p.start_time, "%H:%M"))
+            # Compare each playlist with the next one
+            for i in range(len(day_playlists) - 1):
+                current_end = datetime.strptime(day_playlists[i].end_time, "%H:%M")
+                next_start = datetime.strptime(day_playlists[i + 1].start_time, "%H:%M")
+                if current_end > next_start:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Playlists '{day_playlists[i].name}' and '{day_playlists[i + 1].name}' overlap on {day}",
+                    )
         # notify linked devices with instruction of update setp
         session.commit()
         for device in setup.devices:
             instruction = json.dumps({"instruction": "update_setup"})
             await redis.publish(f"device:{device.id}:instructions", instruction)
 
+        # notify linked devices that where removed
+        for device_id in data.devices_to_remove:
+            instruction = json.dumps({"instruction": "update_setup"})
+            await redis.publish(f"device:{device_id}:instructions", instruction)
         setup_structure = SetupOutput(
             name=setup.name,
             id=setup.id,

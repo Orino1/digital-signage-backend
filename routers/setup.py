@@ -237,7 +237,6 @@ async def delete_setup(setup_id: int, session: SessionDep, redis: RedisDep, admi
 
     return {"detail": f"Setup {setup_id} deleted successfully."}
 
-# TODO: make sure to check for a unique name on the setup
 # TODO: update the description to match the new req
 @router.put("/{setup_id}", response_model=SetupOutput, summary="Update an existing setup configuration.",
     description="Updates an existing setup configuration identified by `setup_id` with provided details. Supports updating playlists, devices, and setup name. After update, it sends an `update_setup` instruction to all associated devices via Redis pub/sub. Devices listening on `/device/me/instructions` will receive this instruction and subsequently fetch updated setup information from `/device/me`.",
@@ -262,6 +261,11 @@ async def update_setup(
 
         # todo: unique name must be here
         if data.name:
+            # chcek if another setup already have the name
+            other_setup_with_same_name = session.exec(select(Setup).where(Setup.name == data.name, Setup.id != setup_id)).first()
+            if other_setup_with_same_name:
+                raise HTTPException(detail=f"Name {data.name} already in use.", status_code=status.HTTP_409_CONFLICT,)
+
             setup.name = data.name
 
         # remove playlists

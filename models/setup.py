@@ -92,8 +92,8 @@ class Playlist(PlaylistBase, table=True):
 
 
 class PlaylistInput(PlaylistBase):
-    images: list["ImageBase"]
-    videos: list[str]
+    images: list["ImageBase"] = []
+    videos: list[str] = []
 
 class PlaylistOutput(PlaylistBase):
     id: int
